@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fake News Detection</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Fake News Detection</h1>
+        <form id="newsForm" autocomplete="off">
+            <label for="title" title="Enter the headline of the news article">News Title:</label>
+            <input type="text" id="title" name="title" required aria-label="News Title">
+
+            <label for="text" title="Paste or type the full news content">News Content:</label>
+            <textarea id="text" name="text" rows="6" required aria-label="News Content"></textarea>
+
+            <div class="form-buttons">
+                <button type="submit">Check News</button>
+                <button type="button" id="clearBtn">Clear</button>
+            </div>
+        </form>
+        <div id="result-area" style="min-height: 60px;">
+            <div id="result"></div>
+            <div id="confidence-message"></div>
+            <div id="exact-probability"></div>
+            <div id="input-summary"></div>
+        </div>
+        <div id="confidence-bar-container" style="display:none; margin-top:20px;">
+            <div class="bar-bg" title="Confidence: How sure the model is about its prediction">
+                <div id="bar-true" class="bar-true"></div>
+                <div id="bar-fake" class="bar-fake"></div>
+            </div>
+            <div class="bar-labels">
+                <span class="bar-label-true">True News</span>
+                <span class="bar-label-fake">Fake News</span>
+            </div>
+        </div>
+        <div id="piechart-container" style="display:none; margin: 24px auto 0 auto; max-width: 220px;">
+            <canvas id="piechart"></canvas>
+        </div>
+        <div id="feedback-section" style="display:none; margin-top: 24px; flex-direction: column; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 10px; justify-content: center; font-size: 1.1rem;">
+                <span>Was this prediction correct?</span>
+                <button id="feedback-yes" class="feedback-btn" title="Yes, the prediction was correct" aria-label="Feedback Yes">👍</button>
+                <button id="feedback-no" class="feedback-btn" title="No, the prediction was incorrect" aria-label="Feedback No">👎</button>
+            </div>
+            <span id="feedback-confirmation" style="margin-top: 10px; color: #43e97b; display:none;"></span>
+        </div>
+        <div id="error-message" class="error-message" style="display:none;"></div>
+    </div>
+    <script>
+        const form = document.getElementById('newsForm');
+        const clearBtn = document.getElementById('clearBtn');
+        const resultDiv = document.getElementById('result');
+        const confidenceBar = document.getElementById('confidence-bar-container');
+        const barTrue = document.getElementById('bar-true');
+        const barFake = document.getElementById('bar-fake');
+        const confidenceMsg = document.getElementById('confidence-message');
+        const exactProbDiv = document.getElementById('exact-probability');
+        const inputSummary = document.getElementById('input-summary');
+        const errorMsg = document.getElementById('error-message');
+        const piechartContainer = document.getElementById('piechart-container');
+        const feedbackSection = document.getElementById('feedback-section');
+        const feedbackYes = document.getElementById('feedback-yes');
+        const feedbackNo = document.getElementById('feedback-no');
+        const feedbackConfirmation = document.getElementById('feedback-confirmation');
+        let lastTimeout;
+        let pieChart;
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            // Reset previous
+            clearDisplay(false);
+            resultDiv.innerHTML = '<div class="loader"></div>';
+            try {
+                const title = document.getElementById('title').value;
+                const text = document.getElementById('text').value;
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, text })
+                });
+                if (!response.ok) throw new Error('Server error');
+                const data = await response.json();
+                // Icons
+                const icon = data.prediction === 'True News' ? '✔️' : '❌';
+                const color = data.prediction === 'True News' ? '#43e97b' : '#ff5858';
+                resultDiv.innerHTML = `<h2 style="color:${color};transition:color 0.5s;">${icon} Result: ${data.prediction}</h2>`;
+                // Confidence message
+                const confidence = data.prediction === 'True News' ? data.true_proba : data.fake_proba;
+                confidenceMsg.innerHTML = `<span title='How sure the model is about its prediction'>The model is <b>${Math.round(confidence*100)}%</b> confident this is <b>${data.prediction}</b>.</span>`;
+                // Exact probability
+                exactProbDiv.innerHTML = `<span style='font-size:1.05rem;color:#888;'>Exact probability: <b>${(confidence*100).toFixed(2)}%</b></span>`;
+                // Input summary
+                inputSummary.innerHTML = `<div class='input-summary-box'><b>Your Input:</b><br><b>Title:</b> ${title}<br><b>Content:</b> ${text}</div>`;
+                // Confidence bar
+                const truePercent = Math.round(data.true_proba * 100);
+                const fakePercent = Math.round(data.fake_proba * 100);
+                barTrue.style.width = '0%';
+                barFake.style.width = '0%';
+                barTrue.textContent = '';
+                barFake.textContent = '';
+                confidenceBar.style.display = 'block';
+                // Animate bar
+                setTimeout(() => {
+                    barTrue.style.width = truePercent + '%';
+                    barFake.style.width = fakePercent + '%';
+                    barTrue.textContent = truePercent > 0 ? truePercent + '%' : '';
+                    barFake.textContent = fakePercent > 0 ? fakePercent + '%' : '';
+                }, 100);
+                // Pie chart
+                piechartContainer.style.display = 'block';
+                if (pieChart) pieChart.destroy();
+                pieChart = new Chart(document.getElementById('piechart'), {
+                    type: 'pie',
+                    data: {
+                        labels: ['True News', 'Fake News'],
+                        datasets: [{
+                            data: [data.true_proba, data.fake_proba],
+                            backgroundColor: [
+                                'rgba(67, 233, 123, 0.85)',
+                                'rgba(255, 88, 88, 0.85)'
+                            ],
+                            borderColor: [
+                                'rgba(67, 233, 123, 1)',
+                                'rgba(255, 88, 88, 1)'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'bottom',
+                                labels: {
+                                    font: { size: 14 }
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.label || '';
+                                        let value = context.parsed;
+                                        return `${label}: ${(value*100).toFixed(2)}%`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                // Feedback section
+                feedbackSection.style.display = 'block';
+                feedbackConfirmation.style.display = 'none';
+            } catch (err) {
+                resultDiv.innerHTML = '';
+                confidenceMsg.innerHTML = '';
+                exactProbDiv.innerHTML = '';
+                inputSummary.innerHTML = '';
+                confidenceBar.style.display = 'none';
+                piechartContainer.style.display = 'none';
+                feedbackSection.style.display = 'none';
+                errorMsg.style.display = 'block';
+                errorMsg.textContent = 'An error occurred. Please try again.';
+                if (lastTimeout) clearTimeout(lastTimeout);
+                lastTimeout = setTimeout(() => { errorMsg.style.display = 'none'; }, 4000);
+            }
+        });
+
+        clearBtn.addEventListener('click', function() {
+            form.reset();
+            clearDisplay(true);
+        });
+
+        function clearDisplay(clearError) {
+            resultDiv.innerHTML = '';
+            confidenceMsg.innerHTML = '';
+            exactProbDiv.innerHTML = '';
+            inputSummary.innerHTML = '';
+            confidenceBar.style.display = 'none';
+            piechartContainer.style.display = 'none';
+            feedbackSection.style.display = 'none';
+            if (clearError) errorMsg.style.display = 'none';
+        }
+
+        feedbackYes.addEventListener('click', function() {
+            feedbackConfirmation.textContent = 'Thank you for your feedback!';
+            feedbackConfirmation.style.display = 'inline';
+        });
+        feedbackNo.addEventListener('click', function() {
+            feedbackConfirmation.textContent = 'Thank you for your feedback!';
+            feedbackConfirmation.style.display = 'inline';
+        });
+    </script>
+</body>
+</html>
